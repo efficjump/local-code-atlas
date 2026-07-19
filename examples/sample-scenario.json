@@ -1,0 +1,29 @@
+{
+  "branch": "demo/session-expiry",
+  "changes": [
+    {
+      "path": "db/schema.sql",
+      "status": "modified",
+      "staged": true,
+      "unstaged": false,
+      "additions": 4,
+      "deletions": 1
+    },
+    {
+      "path": "src/services/session-service.ts",
+      "status": "modified",
+      "staged": false,
+      "unstaged": true,
+      "additions": 5,
+      "deletions": 2
+    },
+    {
+      "path": "tests/session-service.test.ts",
+      "status": "modified",
+      "staged": false,
+      "unstaged": true,
+      "additions": 8,
+      "deletions": 0
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "name": "local-code-atlas",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local-first code intelligence for change impact, security findings, and database relationships.",
+  "license": "MIT",
+  "keywords": [
+    "code-intelligence",
+    "static-analysis",
+    "security",
+    "erd",
+    "local-first"
+  ],
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others --names web,engine --prefix-colors cyan,green \"pnpm dev:web\" \"pnpm dev:engine\"",
+    "dev:web": "vinext dev",
+    "dev:engine": "tsx watch server/index.ts",
+    "build": "pnpm build:web && pnpm build:engine",
+    "build:web": "vinext build",
+    "build:engine": "tsup server/index.ts --format esm --platform node --target node22 --out-dir dist-local --clean",
+    "start": "concurrently --kill-others --names web,engine --prefix-colors cyan,green \"pnpm start:web\" \"pnpm start:engine\"",
+    "start:web": "vinext start",
+    "start:engine": "node dist-local/index.js",
+    "launch": "node scripts/launch-local.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "test:core": "node scripts/run-tests.mjs tests/core tests/analyzers",
+    "test:render": "node --test tests/rendered-html.build-test.mjs",
+    "typecheck": "tsc --noEmit --incremental false",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:render",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-local --ignore-pattern .next",
+    "atlas": "tsx server/cli.ts"
+  },
+  "dependencies": {
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "concurrently": "9.2.1",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "react-server-dom-webpack": "19.2.6",
+    "tsx": "4.20.6",
+    "tsup": "8.5.0",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "8.0.13"
+  },
+  "type": "module"
+}

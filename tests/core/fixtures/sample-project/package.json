@@ -1,0 +1,12 @@
+{
+  "name": "sample-local-atlas-project",
+  "private": true,
+  "dependencies": {
+    "drizzle-orm": "workspace-compatible-version",
+    "next": "workspace-compatible-version",
+    "react": "workspace-compatible-version"
+  },
+  "devDependencies": {
+    "vitest": "workspace-compatible-version"
+  }
+}

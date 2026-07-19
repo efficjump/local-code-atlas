@@ -1,0 +1,12 @@
+{
+  "name": "security-fixture",
+  "private": true,
+  "dependencies": {
+    "exact-library": "1.2.3",
+    "floating-library": "latest",
+    "mutable-library": "git+https://example.invalid/vendor/library.git#main"
+  },
+  "devDependencies": {
+    "range-library": "^4.5.0"
+  }
+}

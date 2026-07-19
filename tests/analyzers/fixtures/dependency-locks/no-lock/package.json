@@ -1,0 +1,7 @@
+{
+  "name": "no-lock-fixture",
+  "private": true,
+  "dependencies": {
+    "range-only-library": "^5.0.0"
+  }
+}

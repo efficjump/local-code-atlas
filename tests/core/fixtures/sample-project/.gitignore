@@ -1,0 +1,6 @@
+ignored/*
+!ignored/keep.cts
+*.generated.cts
+!src/keep.generated.cts
+.env*
+!.env.example

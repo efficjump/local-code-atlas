@@ -1,0 +1,2 @@
+DATABASE_PASSWORD=synthetic-password-value
+SERVICE_TOKEN=${SERVICE_TOKEN}

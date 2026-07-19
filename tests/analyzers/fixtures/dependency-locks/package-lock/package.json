@@ -1,0 +1,11 @@
+{
+  "name": "package-lock-fixture",
+  "private": true,
+  "packageManager": "npm@11.0.0",
+  "dependencies": {
+    "runtime-library": "^1.0.0"
+  },
+  "devDependencies": {
+    "development-library": "~2.0.0"
+  }
+}

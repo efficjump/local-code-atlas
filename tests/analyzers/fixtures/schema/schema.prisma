@@ -1,0 +1,31 @@
+model User {
+  id       String    @id @default(uuid())
+  email    String    @unique
+  sessions Session[]
+
+  @@map("users")
+  @@schema("app")
+}
+model Session {
+  id       String @id @default(uuid())
+  userId   String @map("user_id")
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+  @@schema("app")
+}
+
+model Team {
+  id      Int      @id @default(autoincrement())
+  members Member[]
+
+  @@map("teams")
+}
+
+model Member {
+  id     Int  @id @default(autoincrement())
+  teamId Int? @map("team_id")
+  team   Team? @relation(fields: [teamId], references: [id])
+
+  @@map("members")
+}

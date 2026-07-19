@@ -1,0 +1,11 @@
+# yarn lockfile v1
+
+direct-library@^1.0.0:
+  version "1.3.0"
+  resolved "https://registry.yarnpkg.com/direct-library/-/direct-library-1.3.0.tgz"
+  dependencies:
+    transitive-library "^4.0.0"
+
+transitive-library@^4.0.0:
+  version "4.2.1"
+  resolved "https://registry.yarnpkg.com/transitive-library/-/transitive-library-4.2.1.tgz"

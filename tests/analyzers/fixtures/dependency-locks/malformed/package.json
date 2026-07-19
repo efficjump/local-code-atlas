@@ -1,0 +1,8 @@
+{
+  "name": "malformed-lock-fixture",
+  "private": true,
+  "packageManager": "pnpm@11.0.0",
+  "dependencies": {
+    "fallback-library": "^6.0.0"
+  }
+}

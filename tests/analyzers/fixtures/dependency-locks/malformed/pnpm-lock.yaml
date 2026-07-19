@@ -1,0 +1,7 @@
+lockfileVersion: '9.0'
+importers:
+	.:
+    dependencies:
+      fallback-library:
+        specifier: ^6.0.0
+        version: 6.2.0

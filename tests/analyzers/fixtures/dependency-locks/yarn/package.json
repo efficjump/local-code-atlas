@@ -1,0 +1,8 @@
+{
+  "name": "yarn-lock-fixture",
+  "private": true,
+  "packageManager": "yarn@1.22.22",
+  "dependencies": {
+    "direct-library": "^1.0.0"
+  }
+}
