@@ -16,6 +16,10 @@ import {
   AI_SYNTHESIS_REQUEST_FIELDS,
   OSV_REQUEST_FIELDS,
 } from "../../src/privacy/external-data";
+import {
+  MigrationRiskPanel,
+  type MigrationRiskView,
+} from "./MigrationRiskPanel";
 
 export type AtlasSeverity = "critical" | "high" | "medium" | "low" | "info";
 export type AtlasRelationshipOrigin = "declared" | "inferred" | "unknown";
@@ -50,6 +54,10 @@ export interface AtlasHealth {
   version: string;
   localOnly: boolean;
   allowedRootsConfigured: boolean;
+  capabilities: {
+    migrationRisk: true;
+    benchmark: true;
+  };
   external: {
     localByDefault: boolean;
     osv: {
@@ -160,6 +168,7 @@ export interface AtlasAnalysis {
       relevance: AtlasEvidenceRelevance;
     }>;
   };
+  migration: MigrationRiskView;
   ai: {
     enabled: boolean;
     summary?: string;
@@ -315,6 +324,7 @@ export class AtlasHealthContractError extends Error {
 
 export function normalizeAtlasHealth(payload: unknown): AtlasHealth {
   const root = isRecord(payload) ? payload : {};
+  const capabilities = isRecord(root.capabilities) ? root.capabilities : {};
   const external = isRecord(root.external) ? root.external : {};
   const osv = isRecord(external.osv) ? external.osv : {};
   const ai = isRecord(external.ai) ? external.ai : {};
@@ -326,6 +336,8 @@ export function normalizeAtlasHealth(payload: unknown): AtlasHealth {
     Boolean(toStringValue(root.version).trim()) &&
     typeof root.localOnly === "boolean" &&
     typeof root.allowedRootsConfigured === "boolean" &&
+    capabilities.migrationRisk === true &&
+    capabilities.benchmark === true &&
     typeof external.localByDefault === "boolean" &&
     typeof osv.available === "boolean" &&
     Array.isArray(osv.wouldTransmit) &&
@@ -345,6 +357,10 @@ export function normalizeAtlasHealth(payload: unknown): AtlasHealth {
     version: toStringValue(root.version),
     localOnly: root.localOnly as boolean,
     allowedRootsConfigured: root.allowedRootsConfigured as boolean,
+    capabilities: {
+      migrationRisk: true,
+      benchmark: true,
+    },
     external: {
       localByDefault: external.localByDefault as boolean,
       osv: {
@@ -367,6 +383,35 @@ function numberRecord(value: unknown): Record<string, number> {
       (entry): entry is [string, number] =>
         typeof entry[1] === "number" && Number.isFinite(entry[1]),
     ),
+  );
+}
+
+const MIGRATION_STATUSES = [
+  "complete",
+  "partial",
+  "not-run",
+  "failed",
+] as const;
+const MIGRATION_SEVERITIES: readonly AtlasSeverity[] = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info",
+];
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isSafeRelativeEvidencePath(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const normalized = value.replaceAll("\\", "/");
+  return (
+    !normalized.startsWith("/") &&
+    !/^[a-z]:\//iu.test(normalized) &&
+    !normalized.split("/").includes("..") &&
+    !normalized.includes("\u0000")
   );
 }
 
@@ -419,6 +464,7 @@ function assertAtlasReportContract(root: Record<string, unknown>): void {
   requireRecord("impact", root.impact);
   requireRecord("security", root.security);
   requireRecord("erd", root.erd);
+  requireRecord("migration", root.migration);
   requireRecord("ai", root.ai);
   requireRecord("run", root.run);
   requireRecord("external", root.external);
@@ -444,11 +490,223 @@ function assertAtlasReportContract(root: Record<string, unknown>): void {
   requireArray("erd.tables", erd.tables);
   requireArray("erd.relationships", erd.relationships);
 
+  const migration = isRecord(root.migration) ? root.migration : {};
+  if (!MIGRATION_STATUSES.includes(
+    migration.status as "complete" | "partial" | "not-run" | "failed",
+  )) {
+    missing.push("migration.status");
+  }
+  requireRecord("migration.summary", migration.summary);
+  requireArray("migration.risks", migration.risks);
+  requireArray("migration.diagnostics", migration.diagnostics);
+
+  const migrationSummary = isRecord(migration.summary)
+    ? migration.summary
+    : {};
+  for (const field of [
+    "files",
+    "operations",
+    "risks",
+    "destructive",
+    "safe",
+  ] as const) {
+    if (!isNonNegativeInteger(migrationSummary[field])) {
+      missing.push(`migration.summary.${field}`);
+    }
+  }
+  const migrationSeveritySummary = isRecord(migrationSummary.bySeverity)
+    ? migrationSummary.bySeverity
+    : {};
+  requireRecord("migration.summary.bySeverity", migrationSummary.bySeverity);
+  for (const severity of MIGRATION_SEVERITIES) {
+    if (!isNonNegativeInteger(migrationSeveritySummary[severity])) {
+      missing.push(`migration.summary.bySeverity.${severity}`);
+    }
+  }
+
+  const migrationRisks = Array.isArray(migration.risks)
+    ? migration.risks
+    : [];
+  const observedMigrationSeverity = Object.fromEntries(
+    MIGRATION_SEVERITIES.map((severity) => [severity, 0]),
+  ) as Record<AtlasSeverity, number>;
+  let observedUnsafe = 0;
+  let observedDestructive = 0;
+  let observedSafe = 0;
+  for (const [index, candidate] of migrationRisks.entries()) {
+    const path = `migration.risks[${index}]`;
+    if (!isRecord(candidate)) {
+      missing.push(path);
+      continue;
+    }
+    for (const field of [
+      "id",
+      "label",
+      "semanticKey",
+      "category",
+      "explanation",
+      "remediation",
+    ] as const) {
+      if (!toStringValue(candidate[field]).trim()) {
+        missing.push(`${path}.${field}`);
+      }
+    }
+    const severity = candidate.severity as AtlasSeverity;
+    if (!MIGRATION_SEVERITIES.includes(severity)) {
+      missing.push(`${path}.severity`);
+    } else {
+      observedMigrationSeverity[severity] += 1;
+    }
+    if (typeof candidate.destructive !== "boolean") {
+      missing.push(`${path}.destructive`);
+    }
+    if (typeof candidate.safe !== "boolean") {
+      missing.push(`${path}.safe`);
+    }
+    if (candidate.destructive === true && candidate.safe === true) {
+      missing.push(`${path}.safe/destructive`);
+    }
+    if (
+      typeof candidate.confidence !== "number" ||
+      !Number.isFinite(candidate.confidence) ||
+      candidate.confidence < 0 ||
+      candidate.confidence > 1
+    ) {
+      missing.push(`${path}.confidence`);
+    }
+    if (!isSafeRelativeEvidencePath(candidate.file)) {
+      missing.push(`${path}.file`);
+    }
+    if (
+      candidate.line !== undefined &&
+      (typeof candidate.line !== "number" ||
+        !Number.isSafeInteger(candidate.line) ||
+        candidate.line < 1)
+    ) {
+      missing.push(`${path}.line`);
+    }
+    if (!(["direct", "indirect", "project"] as const).includes(
+      candidate.relevance as "direct" | "indirect" | "project",
+    )) {
+      missing.push(`${path}.relevance`);
+    }
+    if (candidate.introduced !== true) {
+      missing.push(`${path}.introduced`);
+    }
+    if (candidate.safe === true) observedSafe += 1;
+    else observedUnsafe += 1;
+    if (candidate.destructive === true) observedDestructive += 1;
+  }
+
+  if (
+    isNonNegativeInteger(migrationSummary.operations) &&
+    migrationSummary.operations !== migrationRisks.length
+  ) {
+    missing.push("migration.summary.operations consistency");
+  }
+  if (
+    isNonNegativeInteger(migrationSummary.risks) &&
+    migrationSummary.risks !== observedUnsafe
+  ) {
+    missing.push("migration.summary.risks consistency");
+  }
+  if (
+    isNonNegativeInteger(migrationSummary.destructive) &&
+    migrationSummary.destructive !== observedDestructive
+  ) {
+    missing.push("migration.summary.destructive consistency");
+  }
+  if (
+    isNonNegativeInteger(migrationSummary.safe) &&
+    migrationSummary.safe !== observedSafe
+  ) {
+    missing.push("migration.summary.safe consistency");
+  }
+  for (const severity of MIGRATION_SEVERITIES) {
+    if (
+      isNonNegativeInteger(migrationSeveritySummary[severity]) &&
+      migrationSeveritySummary[severity] !==
+        observedMigrationSeverity[severity]
+    ) {
+      missing.push(`migration.summary.bySeverity.${severity} consistency`);
+    }
+  }
+
+  const migrationDiagnostics = Array.isArray(migration.diagnostics)
+    ? migration.diagnostics
+    : [];
+  if (
+    migrationDiagnostics.some(
+      (diagnostic) => typeof diagnostic !== "string" || !diagnostic.trim(),
+    )
+  ) {
+    missing.push("migration.diagnostics entries");
+  }
+  if (
+    (migration.status === "complete" || migration.status === "not-run") &&
+    migrationDiagnostics.length > 0
+  ) {
+    missing.push("migration.status/diagnostics consistency");
+  }
+
+  const migrationComparison = isRecord(migration.comparison)
+    ? migration.comparison
+    : undefined;
+  if (migration.status !== "not-run" && !migrationComparison) {
+    missing.push("migration.comparison");
+  }
+  if (migrationComparison) {
+    if (!(["working-tree", "staged", "base"] as const).includes(
+      migrationComparison.mode as "working-tree" | "staged" | "base",
+    )) {
+      missing.push("migration.comparison.mode");
+    }
+    if (!toStringValue(migrationComparison.label).trim()) {
+      missing.push("migration.comparison.label");
+    }
+    if (!(["HEAD", "merge-base", "synthetic baseline"] as const).includes(
+      migrationComparison.beforeSource as
+        | "HEAD"
+        | "merge-base"
+        | "synthetic baseline",
+    )) {
+      missing.push("migration.comparison.beforeSource");
+    }
+    if (!(["working-tree", "index", "HEAD", "fixture"] as const).includes(
+      migrationComparison.afterSource as
+        | "working-tree"
+        | "index"
+        | "HEAD"
+        | "fixture",
+    )) {
+      missing.push("migration.comparison.afterSource");
+    }
+  }
+
   const run = isRecord(root.run) ? root.run : {};
   if (typeof run.partial !== "boolean") missing.push("run.partial");
   if (run.scope !== "production" && run.scope !== "all") missing.push("run.scope");
   if (!Array.isArray(run.stages) || run.stages.length === 0) {
     missing.push("run.stages");
+  }
+  const migrationStages = Array.isArray(run.stages)
+    ? run.stages.filter(
+        (stage) => isRecord(stage) && stage.id === "migration",
+      )
+    : [];
+  if (migrationStages.length !== 1) {
+    missing.push("run.stages[migration]");
+  } else if (
+    isRecord(migrationStages[0]) &&
+    migrationStages[0].status !== migration.status
+  ) {
+    missing.push("run.stages[migration].status consistency");
+  }
+  if (
+    (migration.status === "partial" || migration.status === "failed") &&
+    run.partial !== true
+  ) {
+    missing.push("run.partial/migration.status consistency");
   }
 
   const external = isRecord(root.external) ? root.external : {};
@@ -492,6 +750,10 @@ export function normalizeAtlasAnalysis(
   const securitySummary = isRecord(security.summary) ? security.summary : {};
   const erdCandidate = root.erd ?? root.dataMap;
   const erd = isRecord(erdCandidate) ? erdCandidate : {};
+  const migration = isRecord(root.migration) ? root.migration : {};
+  const migrationSummary = isRecord(migration.summary)
+    ? migration.summary
+    : {};
   const ai = isRecord(root.ai) ? root.ai : {};
   const run = isRecord(root.run) ? root.run : {};
   const external = isRecord(root.external) ? root.external : {};
@@ -570,6 +832,57 @@ export function normalizeAtlasAnalysis(
 
   const derivedSeverityCount = (severity: AtlasSeverity) =>
     securityFindings.filter((finding) => finding.severity === severity).length;
+
+  const migrationRisks: MigrationRiskView["risks"] = toArray(
+    migration.risks,
+  ).map((entry, index) => {
+    const risk = isRecord(entry) ? entry : {};
+    const category = toStringValue(risk.category, "manual-review");
+    const table = toStringValue(risk.table) || undefined;
+    const column = toStringValue(risk.column) || undefined;
+    const file = toStringValue(risk.file ?? risk.sourceFile, "Unknown migration source");
+    return {
+      id: toStringValue(risk.id, `migration-risk-${index + 1}`),
+      label: toStringValue(
+        risk.label,
+        `${category}:${table ?? file}${column ? `.${column}` : ""}`,
+      ),
+      category,
+      severity: normalizeSeverity(risk.severity),
+      destructive: risk.destructive === true,
+      safe: risk.safe === true,
+      confidence: normalizeConfidence(risk.confidence),
+      explanation: toStringValue(
+        risk.explanation,
+        "This schema operation requires a deployment-specific review.",
+      ),
+      remediation: toStringValue(
+        risk.remediation,
+        "Verify compatibility, data preservation, locking, and rollback behavior before deployment.",
+      ),
+      table,
+      column,
+      nextName: toStringValue(risk.nextName) || undefined,
+      file,
+      line: toNumber(risk.line) || undefined,
+      relevance: normalizeEvidenceRelevance(risk.relevance),
+      introduced: risk.introduced !== false,
+    };
+  });
+  const migrationSeverityCount = (severity: AtlasSeverity) =>
+    migrationRisks.filter((risk) => risk.severity === severity).length;
+  const rawMigrationStatus = toStringValue(migration.status);
+  const migrationStatus = (["complete", "partial", "not-run", "failed"] as const).includes(
+    rawMigrationStatus as "complete" | "partial" | "not-run" | "failed",
+  )
+    ? (rawMigrationStatus as MigrationRiskView["status"])
+    : "partial";
+  const migrationComparisonCandidate = isRecord(migration.comparison)
+    ? migration.comparison
+    : undefined;
+  const migrationComparisonMode = toStringValue(
+    migrationComparisonCandidate?.mode,
+  );
 
   return {
     id: toStringValue(root.id, `analysis-${Date.now()}`),
@@ -693,6 +1006,78 @@ export function normalizeAtlasAnalysis(
           relevance: normalizeEvidenceRelevance(relationship.relevance),
         };
       }),
+    },
+    migration: {
+      status: migrationStatus,
+      comparison: migrationComparisonCandidate
+        ? {
+            mode: (["working-tree", "staged", "base"] as const).includes(
+              migrationComparisonMode as "working-tree" | "staged" | "base",
+            )
+              ? (migrationComparisonMode as "working-tree" | "staged" | "base")
+              : "unknown",
+            label: toStringValue(
+              migrationComparisonCandidate.label,
+              "Selected Git comparison",
+            ),
+            beforeSource:
+              toStringValue(migrationComparisonCandidate.beforeSource) ||
+              undefined,
+            afterSource:
+              toStringValue(migrationComparisonCandidate.afterSource) ||
+              undefined,
+          }
+        : undefined,
+      summary: {
+        files: toNumber(migrationSummary.files),
+        operations: toNumber(migrationSummary.operations, migrationRisks.length),
+        risks: toNumber(
+          migrationSummary.risks,
+          migrationRisks.filter((risk) => !risk.safe).length,
+        ),
+        destructive: toNumber(
+          migrationSummary.destructive,
+          migrationRisks.filter((risk) => risk.destructive).length,
+        ),
+        safe: toNumber(
+          migrationSummary.safe,
+          migrationRisks.filter((risk) => risk.safe).length,
+        ),
+        bySeverity: {
+          critical: toNumber(
+            isRecord(migrationSummary.bySeverity)
+              ? migrationSummary.bySeverity.critical
+              : undefined,
+            migrationSeverityCount("critical"),
+          ),
+          high: toNumber(
+            isRecord(migrationSummary.bySeverity)
+              ? migrationSummary.bySeverity.high
+              : undefined,
+            migrationSeverityCount("high"),
+          ),
+          medium: toNumber(
+            isRecord(migrationSummary.bySeverity)
+              ? migrationSummary.bySeverity.medium
+              : undefined,
+            migrationSeverityCount("medium"),
+          ),
+          low: toNumber(
+            isRecord(migrationSummary.bySeverity)
+              ? migrationSummary.bySeverity.low
+              : undefined,
+            migrationSeverityCount("low"),
+          ),
+          info: toNumber(
+            isRecord(migrationSummary.bySeverity)
+              ? migrationSummary.bySeverity.info
+              : undefined,
+            migrationSeverityCount("info"),
+          ),
+        },
+      },
+      risks: migrationRisks,
+      diagnostics: stringList(migration.diagnostics),
     },
     ai: {
       enabled:
@@ -1332,6 +1717,13 @@ export function AtlasWorkbench() {
           </span>
         </a>
         <div className="atlas-header-meta">
+          <a
+            className="atlas-header-link atlas-header-link--benchmark"
+            href="/benchmark"
+            aria-label="Benchmark lab"
+          >
+            Benchmark lab
+          </a>
           <span
             className={`atlas-privacy-chip${health && !health.localOnly ? " atlas-privacy-chip--warning" : ""}`}
           >
@@ -1565,7 +1957,7 @@ export function AtlasWorkbench() {
               <span className="atlas-capability-index">03</span>
               <div>
                 <strong>Data map</strong>
-                <p>Derive tables and relationships from project schema sources.</p>
+                <p>Map relationships and review Git-introduced migration operations.</p>
               </div>
               <span className="atlas-capability-state">READY</span>
             </li>
@@ -1715,7 +2107,7 @@ export function AtlasWorkbench() {
                   : view.id === "security"
                     ? analysis.security.findings.length
                     : view.id === "data"
-                      ? analysis.erd.tables.length
+                      ? analysis.erd.tables.length + analysis.migration.summary.risks
                       : undefined;
               return (
                 <button
@@ -1778,7 +2170,10 @@ export function AtlasWorkbench() {
                 <article>
                   <span>DATA ENTITIES</span>
                   <strong>{analysis.erd.tables.length}</strong>
-                  <small>{analysis.erd.relationships.length} relationships</small>
+                  <small>
+                    {analysis.erd.relationships.length} relationships ·{" "}
+                    {analysis.migration.summary.risks} migration risks
+                  </small>
                 </article>
               </div>
 
@@ -2189,6 +2584,11 @@ export function AtlasWorkbench() {
               role="tabpanel"
               aria-labelledby="atlas-tab-data"
             >
+              <MigrationRiskPanel
+                migration={analysis.migration}
+                copySource={copySourceLocation}
+              />
+
               <div className="atlas-view-heading atlas-view-heading--data">
                 <div>
                   <span className="atlas-section-label">SCHEMA TOPOLOGY</span>

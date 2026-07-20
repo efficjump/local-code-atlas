@@ -13,10 +13,14 @@ GET /api/health
 {
   "service": "local-code-atlas-engine",
   "status": "ok",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "localOnly": true,
   "platform": "darwin",
   "allowedRootsConfigured": true,
+  "capabilities": {
+    "migrationRisk": true,
+    "benchmark": true
+  },
   "external": {
     "localByDefault": true,
     "osv": {
@@ -31,9 +35,9 @@ GET /api/health
 }
 ```
 
-Clients must validate `service`, `status`, version, trust-boundary booleans, and
-the `external` disclosure shape before sending a project path. A `2xx` response
-by itself is not an analyzer identity signal.
+Clients must validate `service`, `status`, version, trust-boundary booleans,
+required capabilities, and the `external` disclosure shape before sending a
+project path. A `2xx` response by itself is not an analyzer identity signal.
 
 The launcher additionally checks whether an existing engine is restricted to
 the selected project without returning the configured path itself:
@@ -103,6 +107,8 @@ The response groups evidence into:
 - `impact`: ranked files, file/line evidence, and suggested tests;
 - `security`: normalized findings, severities, and dependency inventory;
 - `erd`: tables, columns, and declared or inferred relationships;
+- `migration`: selected Git comparison, introduced SQL operations, risk and
+  safe-change counts, source locations, remediation, and explicit coverage;
 - `ai`: configured/enabled state and optional synthesis;
 - `run`: analysis scope, partial state, and per-stage coverage;
 - `external`: OSV/model request status, fields that would be sent, and fields
@@ -135,6 +141,30 @@ are never returned.
 Absolute internal scan paths are never returned for bundled samples. Findings
 use project-relative paths. A user-selected project path is echoed as the
 project label so the local operator can confirm which directory was analyzed.
+
+Migration analysis reads the exact comparison surface: `HEAD` to filesystem for
+working-tree mode, `HEAD` to Git index for staged mode, and merge base to `HEAD`
+for base mode. If no supported changed SQL source is present, status is
+`not-run`; missing blobs, unsupported statements, and analysis limits produce
+`partial` or `failed` rather than an empty clean result. Markdown exports retain
+the migration diagnostics as a review list, and SARIF exports retain them as
+`toolExecutionNotifications` so automation does not lose the reason coverage
+was incomplete.
+
+## Run the bundled benchmark
+
+```http
+POST /api/benchmark
+Content-Type: application/json
+
+{ "suite": "bundled" }
+```
+
+The endpoint accepts only the single `suite` field and never accepts a local
+path. It runs checked-in data-only cases sequentially with OSV and model requests
+forced off. The response includes case and run partial state, per-domain and
+aggregate TP/FP/FN counts, precision, recall, F1, and the exact differing labels.
+Metrics with a zero denominator are JSON `null` (`N/A` in the interface).
 
 ## Errors
 

@@ -1,14 +1,16 @@
 {
   "name": "local-code-atlas",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Local-first code intelligence for change impact, security findings, and database relationships.",
+  "description": "Local-first code intelligence for change impact, security, database relationships, migration risk, and measurable benchmark quality.",
   "license": "MIT",
   "keywords": [
     "code-intelligence",
     "static-analysis",
     "security",
     "erd",
+    "database-migrations",
+    "benchmarking",
     "local-first"
   ],
   "packageManager": "pnpm@11.9.0",
@@ -32,7 +34,8 @@
     "typecheck": "tsc --noEmit --incremental false",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:render",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-local --ignore-pattern .next",
-    "atlas": "tsx server/cli.ts"
+    "atlas": "tsx server/cli.ts",
+    "benchmark": "tsx server/benchmark-cli.ts"
   },
   "dependencies": {
     "next": "16.2.6",

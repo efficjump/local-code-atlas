@@ -1,9 +1,33 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { GitChangeStatus, GitMetadata } from "../src/core/index.js";
+import type { MigrationSnapshotOverride } from "../src/report/migration.js";
 
 export function bundledSampleRoot(projectRoot: string): string {
   return join(projectRoot, "examples", "sample-project");
+}
+
+export async function loadBundledSampleGitSnapshots(
+  projectRoot: string,
+): Promise<MigrationSnapshotOverride[]> {
+  const [before, after] = await Promise.all([
+    readFile(
+      join(projectRoot, "examples", "sample-baseline", "db", "schema.sql"),
+      "utf8",
+    ),
+    readFile(
+      join(projectRoot, "examples", "sample-project", "db", "schema.sql"),
+      "utf8",
+    ),
+  ]);
+  return [
+    {
+      path: "db/schema.sql",
+      status: "modified",
+      before,
+      after,
+    },
+  ];
 }
 
 export async function loadBundledSampleGitMetadata(

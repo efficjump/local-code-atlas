@@ -11,9 +11,14 @@ flowchart LR
     INDEX --> IMPACT["Impact analyzer"]
     INDEX --> SECURITY["Security analyzers"]
     INDEX --> SCHEMA["Schema analyzers"]
+    INDEX --> MIGRATION["Git-exact migration comparison"]
+    BENCH["Bundled benchmark catalog"] --> BENCHRUN["Isolated local runner"]
     IMPACT --> REPORT["Evidence report"]
     SECURITY --> REPORT
     SCHEMA --> REPORT
+    MIGRATION --> REPORT
+    REPORT --> BENCHRUN
+    BENCHRUN --> UI
     REPORT --> UI
     REPORT -. "redacted, opt-in context" .-> LLM["Optional model adapter"]
 ```
@@ -82,6 +87,22 @@ disabled, repository or global `core.fsmonitor` helpers are overridden without
 changing configuration, and diff calls explicitly disable external diff and
 textconv drivers. Project hooks and configured helper programs are therefore
 not part of the analysis path.
+
+Migration review adds a content-level comparison to the path-level Git change
+set. Working-tree mode reads the filesystem only after canonical containment
+checks, staged mode reads index blobs, and base mode reads merge-base and `HEAD`
+blobs. SQL operations and before/after schema models are compared by stable
+semantic keys. Unsupported syntax is surfaced as partial coverage, and report
+output never contains the original SQL statement.
+
+## Benchmark contract
+
+Benchmark manifests contain only relative fixture paths, a question, synthetic
+Git metadata, and expected labels. Catalog discovery rejects absolute paths,
+parent traversal, and symlink escapes. Each case runs the same report composer
+with external integrations disabled. Empty expected and observed sets remain
+`N/A`; false positives and false negatives stay visible by label so a higher
+aggregate score cannot hide a specific regression.
 
 ## Non-goals for the first release
 

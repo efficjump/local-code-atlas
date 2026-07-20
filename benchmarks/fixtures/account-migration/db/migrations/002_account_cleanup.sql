@@ -1,0 +1,3 @@
+ALTER TABLE accounts DROP COLUMN legacy_code;
+ALTER TABLE accounts ADD COLUMN region VARCHAR(20) NULL;
+ALTER TABLE accounts ALTER COLUMN owner_id SET NOT NULL;

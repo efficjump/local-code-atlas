@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "account-migration",
+  "name": "Account migration safety",
+  "description": "Measures destructive, compatibility, and safe operations introduced by an added SQL migration.",
+  "fixture": "fixtures/account-migration",
+  "question": "If the account cleanup migration is applied, which schema operations and related sources require review?",
+  "scope": "production",
+  "changedFiles": [
+    {
+      "path": "db/migrations/002_account_cleanup.sql",
+      "status": "added",
+      "staged": true,
+      "unstaged": false,
+      "additions": 3,
+      "deletions": 0
+    }
+  ],
+  "expected": {
+    "impact": [
+      "db/migrations/002_account_cleanup.sql",
+      "db/schema.sql"
+    ],
+    "security": [],
+    "schema": [
+      "column:accounts.id",
+      "column:accounts.owner_id",
+      "column:accounts.region",
+      "table:accounts"
+    ],
+    "migration": [
+      "add-column:accounts.region",
+      "drop-column:accounts.legacy_code",
+      "set-not-null:accounts.owner_id"
+    ]
+  }
+}

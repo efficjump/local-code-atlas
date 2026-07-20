@@ -36,6 +36,36 @@ export function reportToMarkdown(report: AtlasReport): string {
         `| ${finding.severity} | ${markdownCell(finding.title)} | \`${markdownCell(finding.file)}${finding.line ? `:${finding.line}` : ""}\` | ${finding.scope} |`,
     ),
     "",
+    "## Migration review",
+    "",
+    `- Status: ${report.migration.status}`,
+    `- Comparison: ${report.migration.comparison?.label ?? "No supported migration comparison"}`,
+    `- Introduced operations: ${report.migration.summary.operations}`,
+    `- Review risks: ${report.migration.summary.risks}`,
+    "",
+    ...(report.migration.status === "partial" || report.migration.status === "failed"
+      ? [
+          "> Migration coverage is incomplete. Missing findings must not be interpreted as a clean result.",
+          "",
+        ]
+      : []),
+    ...(report.migration.diagnostics.length > 0
+      ? [
+          "### Migration coverage diagnostics",
+          "",
+          ...report.migration.diagnostics.map(
+            (diagnostic) => `- ${markdownCell(diagnostic)}`,
+          ),
+          "",
+        ]
+      : []),
+    "| Severity | Operation | Source | Review |",
+    "| --- | --- | --- | --- |",
+    ...report.migration.risks.map(
+      (risk) =>
+        `| ${risk.severity} | ${markdownCell(risk.label)} | \`${markdownCell(risk.file)}${risk.line ? `:${risk.line}` : ""}\` | ${risk.safe ? "safe" : risk.destructive ? "destructive" : "review"} |`,
+    ),
+    "",
     "## Data relationships",
     "",
     "| Origin | From | To | Relationship |",
@@ -70,7 +100,7 @@ function sarifArtifactUri(file: string): string {
 }
 
 export function reportToSarif(report: AtlasReport): object {
-  const ruleMap = new Map(
+  const securityRuleMap = new Map(
     report.security.findings.map((finding) => [
       finding.id,
       {
@@ -91,6 +121,29 @@ export function reportToSarif(report: AtlasReport): object {
       },
     ]),
   );
+  const migrationRuleMap = new Map(
+    report.migration.risks.map((risk) => {
+      const ruleId = `migration/${risk.category}`;
+      return [
+        ruleId,
+        {
+          id: ruleId,
+          name: `Migration ${risk.category}`,
+          shortDescription: {
+            text: `Review ${risk.category.replaceAll("-", " ")} migration operations`,
+          },
+          fullDescription: { text: risk.explanation },
+          help: { text: risk.remediation },
+          properties: {
+            category: risk.category,
+            destructive: risk.destructive,
+            safe: risk.safe,
+            confidence: risk.confidence,
+          },
+        },
+      ] as const;
+    }),
+  );
 
   return {
     version: "2.1.0",
@@ -100,7 +153,7 @@ export function reportToSarif(report: AtlasReport): object {
         tool: {
           driver: {
             name: "Local Code Atlas",
-            rules: [...ruleMap.values()],
+            rules: [...securityRuleMap.values(), ...migrationRuleMap.values()],
           },
         },
         invocations: [
@@ -108,28 +161,62 @@ export function reportToSarif(report: AtlasReport): object {
             executionSuccessful: !report.run.stages.some(
               (stage) => stage.status === "failed",
             ),
+            toolExecutionNotifications: report.migration.diagnostics.map(
+              (diagnostic) => ({
+                descriptor: { id: "migration-coverage" },
+                level: report.migration.status === "failed" ? "error" : "warning",
+                message: { text: diagnostic },
+                properties: {
+                  stage: "migration",
+                  coverageStatus: report.migration.status,
+                },
+              }),
+            ),
             properties: {
               scope: report.run.scope,
               partial: report.run.partial,
               comparison: report.project.git?.comparison.label,
+              migrationStatus: report.migration.status,
+              migrationDiagnostics: report.migration.diagnostics.length,
             },
           },
         ],
-        results: report.security.findings.map((finding) => ({
-          ruleId: finding.id,
-          level: sarifLevel(finding.severity),
-          message: { text: `${finding.title}. ${finding.evidence}` },
-          locations: [
-            {
-              physicalLocation: {
-                artifactLocation: { uri: sarifArtifactUri(finding.file) },
-                ...(finding.line
-                  ? { region: { startLine: finding.line } }
-                  : {}),
+        results: [
+          ...report.security.findings.map((finding) => ({
+            ruleId: finding.id,
+            level: sarifLevel(finding.severity),
+            message: { text: `${finding.title}. ${finding.evidence}` },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: sarifArtifactUri(finding.file) },
+                  ...(finding.line
+                    ? { region: { startLine: finding.line } }
+                    : {}),
+                },
               },
+            ],
+          })),
+          ...report.migration.risks.map((risk) => ({
+            ruleId: `migration/${risk.category}`,
+            level: sarifLevel(risk.severity),
+            message: { text: `${risk.label}. ${risk.explanation}` },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: sarifArtifactUri(risk.file) },
+                  ...(risk.line ? { region: { startLine: risk.line } } : {}),
+                },
+              },
+            ],
+            properties: {
+              destructive: risk.destructive,
+              safe: risk.safe,
+              confidence: risk.confidence,
+              introduced: risk.introduced,
             },
-          ],
-        })),
+          })),
+        ],
       },
     ],
   };

@@ -13,6 +13,7 @@ import { resolveProjectPath } from "./path-policy.js";
 import {
   bundledSampleRoot,
   loadBundledSampleGitMetadata,
+  loadBundledSampleGitSnapshots,
 } from "./sample.js";
 
 interface CliOptions {
@@ -131,6 +132,9 @@ async function main(): Promise<void> {
     comparison: options.sample ? { mode: "working-tree" } : options.comparison,
     gitMetadataOverride: options.sample
       ? await loadBundledSampleGitMetadata(projectRoot)
+      : undefined,
+    gitFileSnapshotsOverride: options.sample
+      ? await loadBundledSampleGitSnapshots(projectRoot)
       : undefined,
     publicPath: options.sample ? "Bundled sample" : root,
     limits: {

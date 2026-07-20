@@ -50,6 +50,12 @@ test("local server exposes health, analysis, and origin protection", async (cont
   const report = await analysis.json() as {
     project: { name: string; git?: { branch?: string; changedFiles: string[] } };
     security: { findings: unknown[] };
+    migration: {
+      status: string;
+      summary: { operations: number; risks: number };
+      risks: Array<{ label: string }>;
+    };
+    run: { partial: boolean };
   };
   assert.equal(report.project.name, "atlas-sample-service");
   assert.equal(report.project.git?.branch, "demo/session-expiry");
@@ -59,6 +65,17 @@ test("local server exposes health, analysis, and origin protection", async (cont
     "tests/session-service.test.ts",
   ]);
   assert.ok(report.security.findings.length >= 1);
+  assert.equal(report.run.partial, false);
+  assert.equal(report.migration.status, "complete");
+  assert.equal(report.migration.summary.operations, 3);
+  assert.deepEqual(
+    report.migration.risks.map((risk) => risk.label).sort(),
+    [
+      "set-not-null:sessions.expires_at",
+      "set-not-null:users.display_name",
+      "type-change:sessions.token",
+    ],
+  );
 
   const rejected = await fetch(`${baseUrl}/api/analyze`, {
     method: "POST",

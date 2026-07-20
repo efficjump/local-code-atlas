@@ -179,6 +179,8 @@ async function enginePolicyStatus(engineUrl, projectPath, workbenchOrigin) {
       payload?.status === "ok" &&
       typeof payload?.version === "string" &&
       payload?.external?.localByDefault === true &&
+      payload?.capabilities?.migrationRisk === true &&
+      payload?.capabilities?.benchmark === true &&
       typeof payload?.allowedRootsConfigured === "boolean" &&
       payload?.projectPolicy?.checked === true;
     if (!ready) {
@@ -192,7 +194,9 @@ async function enginePolicyStatus(engineUrl, projectPath, workbenchOrigin) {
     const originAllowed =
       originResponse.ok &&
       originPayload?.service === "local-code-atlas-engine" &&
-      originPayload?.status === "ok";
+      originPayload?.status === "ok" &&
+      originPayload?.capabilities?.migrationRisk === true &&
+      originPayload?.capabilities?.benchmark === true;
     return {
       reachable: true,
       ready: ready && originAllowed,

@@ -12,6 +12,8 @@ import type {
   SchemaTable,
 } from "./types";
 
+export * from "./migration-risk";
+
 export interface SchemaAnalyzerOptions {
   signal?: AbortSignal;
   includeDefaults?: boolean;

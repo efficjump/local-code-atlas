@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
+import { open, realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
 import { comparePaths, normalizeRelativePath } from "./path-utils";
 import type { GitChangedFile, GitChangeStatus, GitMetadata } from "./types";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_GIT_BUFFER_BYTES = 8 * 1024 * 1024;
+const SNAPSHOT_READ_CHUNK_BYTES = 64 * 1024;
 const READ_ONLY_GIT_CONFIG = ["-c", "core.fsmonitor=false"] as const;
 const SAFE_DIFF_OPTIONS = ["--no-ext-diff", "--no-textconv"] as const;
 
@@ -24,6 +27,31 @@ export interface ChangedFilesOptions extends GitOptions {
   /** Include changes present only in the working directory. Defaults to true. */
   includeUnstaged?: boolean;
   includeUntracked?: boolean;
+}
+
+export interface GitFileSnapshotOptions extends GitOptions {
+  /** Maximum working-tree bytes read for one snapshot. */
+  maxFileBytes?: number;
+}
+
+export type GitSnapshotComparison =
+  | { mode: "working-tree" }
+  | { mode: "staged" }
+  | { mode: "base"; base: string };
+
+export interface GitFileSnapshot {
+  path: string;
+  previousPath?: string;
+  status: GitChangeStatus;
+  before?: string;
+  after?: string;
+  beforeSource: "HEAD" | "merge-base";
+  afterSource: "working-tree" | "index" | "HEAD";
+}
+
+export interface GitFileSnapshotResult {
+  snapshots: GitFileSnapshot[];
+  diagnostics: string[];
 }
 
 export class GitComparisonError extends Error {
@@ -53,7 +81,7 @@ async function git(
   ], {
     encoding: "utf8",
     timeout: options.timeoutMs ?? 10_000,
-    maxBuffer: options.maxBufferBytes ?? 8 * 1024 * 1024,
+    maxBuffer: options.maxBufferBytes ?? DEFAULT_GIT_BUFFER_BYTES,
     signal: options.signal,
     env: {
       ...process.env,
@@ -97,9 +125,38 @@ function statusFromCode(code: string): GitChangeStatus {
   return "unknown";
 }
 
-function parsePorcelainV1(output: string, includeUntracked: boolean): GitChangedFile[] {
+interface PorcelainEntry extends GitChangedFile {
+  stagedStatus?: GitChangeStatus;
+  unstagedStatus?: GitChangeStatus;
+}
+
+function porcelainSurfaceStatus(
+  code: string,
+  surface: "staged" | "unstaged",
+): GitChangeStatus | undefined {
+  if (code === "??") return surface === "unstaged" ? "untracked" : undefined;
+  if (code.includes("U") || code === "AA" || code === "DD") return "conflicted";
+  const index = surface === "staged" ? 0 : 1;
+  const surfaceCode = code[index];
+  if (
+    !surfaceCode ||
+    surfaceCode === " " ||
+    surfaceCode === "?" ||
+    surfaceCode === "!"
+  ) {
+    return undefined;
+  }
+  return statusFromCode(
+    surface === "staged" ? `${surfaceCode} ` : ` ${surfaceCode}`,
+  );
+}
+
+function parsePorcelainV1(
+  output: string,
+  includeUntracked: boolean,
+): PorcelainEntry[] {
   const fields = output.split("\0");
-  const changed: GitChangedFile[] = [];
+  const changed: PorcelainEntry[] = [];
   for (let index = 0; index < fields.length; index += 1) {
     const field = fields[index];
     if (!field || field.length < 3) continue;
@@ -119,6 +176,8 @@ function parsePorcelainV1(output: string, includeUntracked: boolean): GitChanged
       status: statusFromCode(code),
       staged,
       unstaged,
+      stagedStatus: porcelainSurfaceStatus(code, "staged"),
+      unstagedStatus: porcelainSurfaceStatus(code, "unstaged"),
     });
   }
   return changed;
@@ -229,6 +288,278 @@ function assertSafeRevision(revision: string): void {
   }
 }
 
+function safeRepositoryPath(
+  repositoryRoot: string,
+  projectRoot: string,
+  relativePath: string,
+): string | undefined {
+  const normalized = normalizeRelativePath(relativePath);
+  if (
+    !normalized ||
+    path.posix.isAbsolute(normalized) ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    normalized.includes("\0")
+  ) {
+    return undefined;
+  }
+  const rawPrefix = path.relative(repositoryRoot, projectRoot);
+  if (
+    path.isAbsolute(rawPrefix) ||
+    rawPrefix === ".." ||
+    rawPrefix.startsWith(`..${path.sep}`)
+  ) {
+    return undefined;
+  }
+  const prefix = normalizeRelativePath(rawPrefix);
+  return prefix ? `${prefix}/${normalized}` : normalized;
+}
+
+async function tryGitBlob(
+  root: string,
+  revision: string,
+  repositoryPath: string,
+  options: GitOptions,
+  maxBytes: number,
+): Promise<{ content?: string; oversized: boolean }> {
+  try {
+    const objectName = revision
+      ? `${revision}:${repositoryPath}`
+      : `:${repositoryPath}`;
+    const sizeText = await git(root, ["cat-file", "-s", objectName], options);
+    const size = Number.parseInt(sizeText.trim(), 10);
+    if (!Number.isSafeInteger(size) || size < 0) return { oversized: false };
+    if (size > maxBytes) return { oversized: true };
+    const content = await git(root, ["cat-file", "blob", objectName], {
+      ...options,
+      maxBufferBytes: maxBytes,
+    });
+    return { content, oversized: false };
+  } catch (error) {
+    rethrowCancellation(error, options.signal);
+    return { oversized: false };
+  }
+}
+
+function snapshotByteLimit(options: GitFileSnapshotOptions): number {
+  const positiveLimit = (value: number | undefined) =>
+    Number.isSafeInteger(value) && (value as number) > 0
+      ? (value as number)
+      : undefined;
+  const fileLimit = positiveLimit(options.maxFileBytes);
+  const bufferLimit = positiveLimit(options.maxBufferBytes);
+  if (fileLimit !== undefined && bufferLimit !== undefined) {
+    return Math.min(fileLimit, bufferLimit);
+  }
+  return fileLimit ?? bufferLimit ?? DEFAULT_GIT_BUFFER_BYTES;
+}
+
+async function readWorkingTreeSnapshot(
+  filePath: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<{ content?: string; oversized: boolean }> {
+  const handle = await open(filePath, "r");
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) return { oversized: false };
+    if (metadata.size > maxBytes) return { oversized: true };
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    while (totalBytes < maxBytes) {
+      signal?.throwIfAborted();
+      const remaining = maxBytes - totalBytes;
+      const buffer = Buffer.allocUnsafe(
+        Math.min(SNAPSHOT_READ_CHUNK_BYTES, remaining),
+      );
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        buffer.length,
+        totalBytes,
+      );
+      if (bytesRead === 0) break;
+      chunks.push(buffer.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
+    if (totalBytes === maxBytes) {
+      signal?.throwIfAborted();
+      const sentinel = Buffer.allocUnsafe(1);
+      const { bytesRead } = await handle.read(sentinel, 0, 1, totalBytes);
+      if (bytesRead > 0) return { oversized: true };
+    }
+    return {
+      content: Buffer.concat(chunks, totalBytes).toString("utf8"),
+      oversized: false,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Read before/after file contents from the exact Git comparison surface.
+ * This prevents staged and base analyses from accidentally inspecting an
+ * unrelated working-tree version of the same file.
+ */
+export async function getGitFileSnapshots(
+  projectPath: string,
+  changes: readonly GitChangedFile[],
+  comparison: GitSnapshotComparison,
+  options: GitFileSnapshotOptions = {},
+): Promise<GitFileSnapshotResult> {
+  const repositoryRoot = await findGitRoot(projectPath, options);
+  if (!repositoryRoot) {
+    throw new GitComparisonError(
+      "NOT_REPOSITORY",
+      "Git file snapshots require a Git repository.",
+    );
+  }
+  const canonicalRepositoryRoot = await realpath(repositoryRoot);
+  const canonicalProjectRoot = await realpath(projectPath);
+  let beforeRevision = "HEAD";
+  let beforeSource: GitFileSnapshot["beforeSource"] = "HEAD";
+  if (comparison.mode === "base") {
+    assertSafeRevision(comparison.base);
+    try {
+      const baseHash = (
+        await git(
+          canonicalRepositoryRoot,
+          ["rev-parse", "--verify", `${comparison.base}^{commit}`],
+          options,
+        )
+      ).trim();
+      beforeRevision = (
+        await git(canonicalRepositoryRoot, ["merge-base", baseHash, "HEAD"], options)
+      ).trim();
+      if (!beforeRevision) throw new Error("Git returned an empty merge base.");
+      beforeSource = "merge-base";
+    } catch (error) {
+      rethrowCancellation(error, options.signal);
+      throw new GitComparisonError(
+        "BASE_NOT_FOUND",
+        `Git could not resolve the merge base for ${comparison.base}.`,
+        { cause: error },
+      );
+    }
+  }
+
+  const diagnostics: string[] = [];
+  const snapshots: GitFileSnapshot[] = [];
+  const maxSnapshotBytes = snapshotByteLimit(options);
+  for (const change of changes) {
+    options.signal?.throwIfAborted();
+    const repositoryPath = safeRepositoryPath(
+      canonicalRepositoryRoot,
+      canonicalProjectRoot,
+      change.path,
+    );
+    const previousRepositoryPath = safeRepositoryPath(
+      canonicalRepositoryRoot,
+      canonicalProjectRoot,
+      change.previousPath ?? change.path,
+    );
+    if (!repositoryPath || !previousRepositoryPath) {
+      diagnostics.push(`${change.path}: Git snapshot path was outside the selected project.`);
+      continue;
+    }
+
+    const expectsBefore = change.status !== "added" && change.status !== "untracked";
+    const expectsAfter = change.status !== "deleted";
+    const beforeResult = expectsBefore
+      ? await tryGitBlob(
+          canonicalRepositoryRoot,
+          beforeRevision,
+          previousRepositoryPath,
+          options,
+          maxSnapshotBytes,
+        )
+      : { oversized: false };
+    const before = beforeResult.content;
+    let after: string | undefined;
+    let beforeDiagnosticRecorded = false;
+    let afterDiagnosticRecorded = false;
+    if (beforeResult.oversized) {
+      diagnostics.push(
+        `${change.path}: before-version content exceeded the configured snapshot byte limit.`,
+      );
+      beforeDiagnosticRecorded = true;
+    }
+    if (expectsAfter && comparison.mode === "working-tree") {
+      const absolutePath = path.resolve(canonicalProjectRoot, change.path);
+      const relativeCheck = path.relative(canonicalProjectRoot, absolutePath);
+      if (
+        relativeCheck !== "" &&
+        relativeCheck !== ".." &&
+        !relativeCheck.startsWith(`..${path.sep}`)
+      ) {
+        try {
+          const canonicalFile = await realpath(absolutePath);
+          const canonicalCheck = path.relative(canonicalProjectRoot, canonicalFile);
+          if (
+            canonicalCheck !== ".." &&
+            !canonicalCheck.startsWith(`..${path.sep}`) &&
+            !path.isAbsolute(canonicalCheck)
+          ) {
+            const result = await readWorkingTreeSnapshot(
+              canonicalFile,
+              maxSnapshotBytes,
+              options.signal,
+            );
+            after = result.content;
+            if (result.oversized) {
+              diagnostics.push(
+                `${change.path}: working-tree content exceeded the configured snapshot byte limit.`,
+              );
+              afterDiagnosticRecorded = true;
+            }
+          }
+        } catch (error) {
+          rethrowCancellation(error, options.signal);
+        }
+      }
+    } else if (expectsAfter) {
+      const result = await tryGitBlob(
+        canonicalRepositoryRoot,
+        comparison.mode === "staged" ? "" : "HEAD",
+        repositoryPath,
+        options,
+        maxSnapshotBytes,
+      );
+      after = result.content;
+      if (result.oversized) {
+        diagnostics.push(
+          `${change.path}: after-version content exceeded the configured snapshot byte limit.`,
+        );
+        afterDiagnosticRecorded = true;
+      }
+    }
+
+    if (expectsBefore && before === undefined && !beforeDiagnosticRecorded) {
+      diagnostics.push(`${change.path}: before-version content was unavailable.`);
+    }
+    if (expectsAfter && after === undefined && !afterDiagnosticRecorded) {
+      diagnostics.push(`${change.path}: after-version content was unavailable.`);
+    }
+    snapshots.push({
+      path: change.path,
+      previousPath: change.previousPath,
+      status: change.status,
+      before,
+      after,
+      beforeSource,
+      afterSource:
+        comparison.mode === "working-tree"
+          ? "working-tree"
+          : comparison.mode === "staged"
+            ? "index"
+            : "HEAD",
+    });
+  }
+  return { snapshots, diagnostics };
+}
+
 export async function findGitRoot(
   projectPath: string,
   options: GitOptions = {},
@@ -333,9 +664,25 @@ export async function getChangedFiles(
         });
       }
     }
-    for (const entry of parsePorcelainV1(status, options.includeUntracked !== false)) {
+    for (const parsedEntry of parsePorcelainV1(
+      status,
+      options.includeUntracked !== false,
+    )) {
+      const { stagedStatus, unstagedStatus, ...entry } = parsedEntry;
+      const selectedStatus =
+        includeStaged && includeUnstaged
+          ? entry.status
+          : includeStaged
+            ? stagedStatus
+            : unstagedStatus;
+      if (!selectedStatus) continue;
       const selectedEntry = {
         ...entry,
+        status: selectedStatus,
+        previousPath:
+          selectedStatus === "renamed" || selectedStatus === "copied"
+            ? entry.previousPath
+            : undefined,
         staged: includeStaged && entry.staged,
         unstaged: includeUnstaged && entry.unstaged,
       };

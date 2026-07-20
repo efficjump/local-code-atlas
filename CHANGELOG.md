@@ -2,6 +2,43 @@
 
 All notable changes to Local Code Atlas are documented here.
 
+## 0.3.0 — 2026-07-20
+
+### Added
+
+- Git-exact SQL migration review for working-tree, staged-index, and merge-base
+  comparisons, including destructive DDL, nullability and type transitions,
+  referential action changes, data mutations, and migration-history rewrites.
+- Required migration coverage in every analysis report, with complete,
+  partial, not-run, and failed states so missing input cannot look clean.
+- Migration review in the Data Map, plus Markdown and SARIF export with source
+  locations and remediation guidance.
+- A local Benchmark Lab page, strict bundled-suite API, CLI export, data-only
+  manifests, and precision/recall/F1 with explicit TP, FP, FN, and N/A values.
+- A migration benchmark case that intentionally preserves a known schema-map
+  false positive, making current analyzer limits visible instead of hiding them.
+
+### Fixed
+
+- Staged migration analysis now reads the Git index rather than a later
+  working-tree edit; base comparisons read `HEAD` against the actual merge
+  base, and working-tree snapshots do not follow symlinks outside the project.
+- Staged-only status selection no longer inherits a later working-tree deletion,
+  and working-tree migration snapshots enforce the configured byte budget before
+  loading file content.
+- CLI sample analysis now uses the same schema baseline as the HTTP sample;
+  migration-history renames remain visible after moving outside the migration
+  directory, including unsupported destination formats with partial coverage.
+- MySQL `ADD INDEX`, `DROP INDEX`, and `DROP FOREIGN KEY` actions are classified
+  explicitly instead of being mistaken for column operations.
+- The workbench rejects incomplete or internally inconsistent migration payloads,
+  while Markdown and SARIF preserve migration coverage diagnostics.
+- Bundled benchmark fixtures are classified as fixtures during repository
+  self-analysis, while each fixture's own source remains production input when
+  its case runs.
+- The bundled sample now carries an explicit schema baseline and demonstrates
+  three reproducible migration findings without making the report partial.
+
 ## 0.2.0 — 2026-07-20
 
 ### Added

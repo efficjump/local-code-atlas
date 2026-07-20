@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "profile-format",
+  "name": "Profile formatting change",
+  "description": "Provides a clean source and single-table schema case for empty-finding metrics.",
+  "fixture": "fixtures/profile-format",
+  "question": "If profile display formatting changes, what code and tests are affected?",
+  "scope": "production",
+  "changedFiles": [
+    {
+      "path": "src/profile-service.ts",
+      "status": "modified",
+      "staged": true,
+      "unstaged": false,
+      "additions": 1,
+      "deletions": 1
+    }
+  ],
+  "expected": {
+    "impact": [
+      "src/profile-service.ts",
+      "tests/profile-service.test.ts"
+    ],
+    "security": [],
+    "schema": [
+      "column:profiles.display_name",
+      "column:profiles.id",
+      "table:profiles"
+    ],
+    "migration": []
+  }
+}

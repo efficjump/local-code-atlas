@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { analyzeLocalProject } from "../src/report/analyze.js";
+
+const execFileAsync = promisify(execFile);
+
+async function runGit(root: string, args: string[]): Promise<void> {
+  await execFileAsync("git", ["-C", root, ...args], {
+    env: { ...process.env, LC_ALL: "C" },
+  });
+}
 
 test("bundled sample produces linked impact, security, and schema evidence", async () => {
   const report = await analyzeLocalProject({
@@ -255,6 +265,124 @@ test("report scans eligible secret files and marks oversized analyzer inputs par
       (diagnostic) =>
         diagnostic.includes("src/oversized.ts") &&
         diagnostic.includes("per-file limit"),
+    ),
+  );
+});
+
+test("migration report keeps staged index content separate from later working-tree SQL", async (context) => {
+  const root = await mkdtemp(join(os.tmpdir(), "local-code-atlas-report-migration-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "db", "migrations"), { recursive: true });
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify({ name: "migration-comparison-project", private: true }),
+  );
+  const migrationPath = join(root, "db", "migrations", "001_accounts.sql");
+  const baseline = "CREATE TABLE accounts (id UUID PRIMARY KEY, note TEXT NULL);\n";
+  const staged = "CREATE TABLE accounts (id UUID PRIMARY KEY, note TEXT NOT NULL);\n";
+  const working = `${staged}ALTER TABLE accounts DROP COLUMN note;\n`;
+  await writeFile(migrationPath, baseline);
+  await runGit(root, ["init", "--quiet"]);
+  await runGit(root, ["config", "user.email", "fixture@example.invalid"]);
+  await runGit(root, ["config", "user.name", "Fixture User"]);
+  await runGit(root, ["add", "."]);
+  await runGit(root, ["commit", "--quiet", "-m", "baseline"]);
+  await writeFile(migrationPath, staged);
+  await runGit(root, ["add", "db/migrations/001_accounts.sql"]);
+  await writeFile(migrationPath, working);
+
+  const common = {
+    root,
+    publicPath: "Migration comparison fixture",
+    question: "Which account migration operations require review?",
+    enableAi: false,
+    checkDependencies: false,
+    limits: {
+      maxFiles: 100,
+      maxFileBytes: 100_000,
+      maxTotalBytes: 1_000_000,
+    },
+  } as const;
+  const stagedReport = await analyzeLocalProject({
+    ...common,
+    comparison: { mode: "staged" },
+  });
+  assert.equal(stagedReport.migration.status, "complete");
+  assert.ok(
+    stagedReport.migration.risks.some(
+      (risk) => risk.label === "set-not-null:accounts.note",
+    ),
+  );
+  assert.ok(
+    stagedReport.migration.risks.every(
+      (risk) => risk.label !== "drop-column:accounts.note",
+    ),
+  );
+
+  const workingReport = await analyzeLocalProject({
+    ...common,
+    comparison: { mode: "working-tree" },
+  });
+  assert.ok(
+    workingReport.migration.risks.some(
+      (risk) => risk.label === "drop-column:accounts.note",
+    ),
+  );
+  assert.equal(
+    workingReport.migration.comparison?.afterSource,
+    "working-tree",
+  );
+});
+
+test("migration history renames remain visible when the new path is not SQL", async (context) => {
+  const root = await mkdtemp(join(os.tmpdir(), "local-code-atlas-report-history-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "db", "migrations"), { recursive: true });
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify({ name: "migration-history-project", private: true }),
+  );
+  await writeFile(
+    join(root, "db", "migrations", "001_accounts.sql"),
+    "CREATE TABLE accounts (id UUID PRIMARY KEY);\n",
+  );
+  await runGit(root, ["init", "--quiet"]);
+  await runGit(root, ["config", "user.email", "fixture@example.invalid"]);
+  await runGit(root, ["config", "user.name", "Fixture User"]);
+  await runGit(root, ["add", "."]);
+  await runGit(root, ["commit", "--quiet", "-m", "baseline"]);
+  await mkdir(join(root, "archive"));
+  await runGit(root, [
+    "mv",
+    "db/migrations/001_accounts.sql",
+    "archive/001_accounts.txt",
+  ]);
+
+  const report = await analyzeLocalProject({
+    root,
+    publicPath: "Migration history fixture",
+    question: "Which migration history changes require review?",
+    enableAi: false,
+    checkDependencies: false,
+    comparison: { mode: "staged" },
+    limits: {
+      maxFiles: 100,
+      maxFileBytes: 100_000,
+      maxTotalBytes: 1_000_000,
+    },
+  });
+
+  assert.equal(report.migration.status, "partial");
+  assert.ok(
+    report.migration.risks.some(
+      (risk) =>
+        risk.label ===
+        "migration-file-renamed:archive/001_accounts.txt",
+    ),
+  );
+  assert.ok(
+    report.migration.diagnostics.some((diagnostic) =>
+      diagnostic.includes("source type is not supported"),
     ),
   );
 });

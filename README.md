@@ -35,8 +35,13 @@ summarize that bounded evidence, but it is not required for analysis.
   DDL/migrations, Prisma, TypeORM, and JPA sources.
 - Shows relationships as a searchable ERD graph and keeps declaration origin
   separate from confidence.
+- Compares the exact Git before/after SQL surface for the working tree, index,
+  or merge base and flags destructive DDL, required-column transitions, type
+  changes, cascade behavior, historical migration rewrites, and data mutations.
 - Separates change-related evidence from whole-project context and exposes
   complete, partial, skipped, and failed analyzer states.
+- Runs a deterministic Benchmark Lab that compares bundled synthetic fixtures
+  with checked-in impact, security, schema, and migration expectations.
 - Optionally asks a configured chat-completions endpoint to synthesize only the
   selected, bounded, redacted evidence.
 
@@ -74,8 +79,13 @@ on port `3000` and the read-only local engine binds to `127.0.0.1:4317` by
 default.
 
 Choose **Run bundled sample** to verify the complete flow without selecting your
-own project. The sample contains deliberate TLS and SQL interpolation risks and
-a three-table relational schema.
+own project. The sample contains deliberate TLS and SQL interpolation risks, a
+three-table relational schema, and a synthetic before/after schema comparison
+with three migration review findings.
+
+Open [http://localhost:3000/benchmark](http://localhost:3000/benchmark) to run
+the bundled accuracy suite. The Benchmark Lab verifies the local engine identity
+before every run and does not accept a project or catalog path from the browser.
 
 ## Analyze from the command line
 
@@ -102,6 +112,28 @@ Useful options:
 - `--output <file>`: write the selected format to a file;
 - `--question` or `-q`: set the impact question.
 
+## Measure analyzer accuracy
+
+The Benchmark Lab discovers data-only manifests below `benchmarks/`, analyzes
+each bundled fixture sequentially, and compares normalized labels. It reports
+true positives, false positives, false negatives, precision, recall, and F1 for
+impact, security, schema, and migration evidence. A zero denominator is shown as
+`N/A`, not as a perfect score.
+
+Run the same bundled suite from the command line:
+
+```bash
+pnpm benchmark
+pnpm benchmark --output benchmark-result.json
+```
+
+The JSON output contains only manifest-relative and fixture-relative paths. The
+HTTP endpoint accepts exactly `{ "suite": "bundled" }`; arbitrary benchmark
+directories are intentionally unavailable through the browser boundary.
+Benchmark runs force OSV advisory requests and model synthesis off regardless of
+the workbench's analysis options. A partial case remains explicitly partial, so
+missing labels cannot be treated as a clean result.
+
 ## Privacy model
 
 Local analysis is the default. The engine does not execute project build hooks,
@@ -109,7 +141,8 @@ modify the selected repository, or persist source contents.
 
 | Capability | Leaves the device? | Default |
 | --- | --- | --- |
-| Structure, Git, impact, source security, ERD | No | On |
+| Structure, Git, impact, source security, ERD, migration review | No | On |
+| Bundled benchmark fixtures and metrics | No | On demand |
 | OSV advisory lookup | Package ecosystem, exact package name, and exact version | Off |
 | AI synthesis | Project name and detected stack, question, relative evidence paths, bounded redacted impact/security evidence, table/column names | Off |
 
@@ -189,7 +222,7 @@ pnpm test:render
 ```
 
 `pnpm check` runs the complete verification sequence. Fixtures are synthetic and
-live under `tests/**/fixtures` and `examples/sample-project`.
+live under `tests/**/fixtures`, `examples/sample-project`, and `benchmarks/fixtures`.
 
 See [docs/roadmap.md](docs/roadmap.md) for the public-alpha, daily-review, and
 extensibility milestones.
@@ -206,7 +239,10 @@ extensibility milestones.
   currently expose `production` and `all`; custom source-scope rules are a
   library-level extension through `ScanOptions.sourceScopeRules` until a
   validated project configuration file is added.
-- SQL migration replay does not yet model every `DROP` or `RENAME` sequence.
+- Migration operation analysis currently supports SQL sources. Unsupported or
+  oversized migration statements mark the stage partial instead of producing a
+  clean result. Stored procedures and vendor-specific online-DDL syntax may
+  still require manual review.
 - ORM naming strategies without explicit physical names are marked inferred.
 - OSV lookup covers dependencies with exact resolved versions. Ranges and
   floating references without a supported lockfile resolution are deliberately
@@ -214,6 +250,9 @@ extensibility milestones.
   deadline configurable through `ATLAS_OSV_TIMEOUT_MS`.
 - Live database connections are not supported; ERD output comes only from
   repository sources.
+- Benchmark labels intentionally use stable, exact identities. They expose
+  deterministic regressions but do not treat semantically equivalent labels as
+  interchangeable.
 
 ## Contributing and security
 

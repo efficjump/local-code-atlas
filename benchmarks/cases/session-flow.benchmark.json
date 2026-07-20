@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "session-flow",
+  "name": "Session change flow",
+  "description": "Measures linked impact, source security findings, and declared database relationships.",
+  "fixture": "fixtures/session-flow",
+  "question": "If session expiration changes, what code and tests are affected?",
+  "scope": "production",
+  "changedFiles": [
+    {
+      "path": "src/services/session-service.ts",
+      "status": "modified",
+      "unstaged": true,
+      "additions": 2,
+      "deletions": 1
+    }
+  ],
+  "expected": {
+    "impact": [
+      "src/api/session-controller.ts",
+      "src/services/session-service.ts",
+      "src/storage/database.ts",
+      "tests/session-service.test.ts"
+    ],
+    "security": [
+      "injection:src/services/session-service.ts:4",
+      "transport-security:src/config/tls.ts:2"
+    ],
+    "schema": [
+      "column:audit_events.actor_user_id",
+      "column:audit_events.event_type",
+      "column:audit_events.id",
+      "column:sessions.expires_at",
+      "column:sessions.id",
+      "column:sessions.token",
+      "column:sessions.user_id",
+      "column:users.email",
+      "column:users.id",
+      "relationship:audit_events.actor_user_id->users.id:declared",
+      "relationship:sessions.user_id->users.id:declared",
+      "table:audit_events",
+      "table:sessions",
+      "table:users"
+    ],
+    "migration": []
+  }
+}

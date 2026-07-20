@@ -33,11 +33,31 @@ function minimalReport() {
       dependencies: { total: 0, exact: 0, eligibleForAdvisoryLookup: 0, ecosystems: {} },
     },
     erd: { tables: [], relationships: [] },
+    migration: {
+      status: "not-run",
+      summary: {
+        files: 0,
+        operations: 0,
+        risks: 0,
+        destructive: 0,
+        safe: 0,
+        bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      },
+      risks: [],
+      diagnostics: [],
+    },
     ai: { enabled: false },
     run: {
       scope: "production",
       partial: false,
-      stages: [{ id: "index", status: "complete", detail: "Indexed 2 files." }],
+      stages: [
+        { id: "index", status: "complete", detail: "Indexed 2 files." },
+        {
+          id: "migration",
+          status: "not-run",
+          detail: "No changed migration sources.",
+        },
+      ],
     },
     external: {
       localByDefault: true,
@@ -64,6 +84,132 @@ test("workbench rejects an incomplete 200 response instead of assuming a clean s
   assert.throws(
     () => normalizeAtlasAnalysis({ project: { name: "partial" } }),
     /incomplete evidence contract/u,
+  );
+});
+
+test("workbench requires migration coverage and preserves partial empty results", () => {
+  const report = minimalReport();
+  const withoutMigration: Record<string, unknown> = { ...report };
+  delete withoutMigration.migration;
+  assert.throws(
+    () => normalizeAtlasAnalysis(withoutMigration),
+    /migration/u,
+  );
+
+  const analysis = normalizeAtlasAnalysis({
+    ...report,
+    migration: {
+      ...report.migration,
+      status: "partial",
+      comparison: {
+        mode: "working-tree",
+        label: "Current working tree",
+        beforeSource: "HEAD",
+        afterSource: "working-tree",
+      },
+      diagnostics: ["db/migrations/002.sql: statement requires manual review."],
+    },
+    run: {
+      ...report.run,
+      partial: true,
+      stages: report.run.stages.map((stage) =>
+        stage.id === "migration"
+          ? { ...stage, status: "partial", detail: "Manual review required." }
+          : stage,
+      ),
+    },
+  });
+  assert.equal(analysis.migration.status, "partial");
+  assert.deepEqual(analysis.migration.risks, []);
+  assert.match(analysis.migration.diagnostics[0], /manual review/u);
+});
+
+test("workbench rejects malformed or inconsistent migration coverage", () => {
+  const missingSummaryField = structuredClone(minimalReport()) as unknown as {
+    migration: { summary: Record<string, unknown> };
+  };
+  delete missingSummaryField.migration.summary.files;
+  assert.throws(
+    () => normalizeAtlasAnalysis(missingSummaryField),
+    /migration\.summary\.files/u,
+  );
+
+  const malformedRisk = minimalReport();
+  assert.throws(
+    () =>
+      normalizeAtlasAnalysis({
+        ...malformedRisk,
+        migration: {
+          status: "complete",
+          comparison: {
+            mode: "working-tree",
+            label: "Current working tree",
+            beforeSource: "HEAD",
+            afterSource: "working-tree",
+          },
+          summary: {
+            files: 1,
+            operations: 1,
+            risks: 1,
+            destructive: 0,
+            safe: 0,
+            bySeverity: {
+              critical: 0,
+              high: 1,
+              medium: 0,
+              low: 0,
+              info: 0,
+            },
+          },
+          risks: [
+            {
+              id: "risk-1",
+              label: "set-not-null:users.email",
+              category: "set-not-null",
+              severity: "high",
+              destructive: false,
+              safe: false,
+              confidence: 0.95,
+              explanation: "Existing null rows can violate the constraint.",
+              remediation: "Backfill before enforcing the constraint.",
+              file: "db/migrations/002.sql",
+              line: 1,
+              relevance: "direct",
+              introduced: true,
+            },
+          ],
+          diagnostics: [],
+        },
+        run: {
+          ...malformedRisk.run,
+          stages: malformedRisk.run.stages.map((stage) =>
+            stage.id === "migration"
+              ? { ...stage, status: "complete" }
+              : stage,
+          ),
+        },
+      }),
+    /semanticKey/u,
+  );
+
+  const inconsistentStatus = minimalReport();
+  assert.throws(
+    () =>
+      normalizeAtlasAnalysis({
+        ...inconsistentStatus,
+        migration: {
+          ...inconsistentStatus.migration,
+          status: "partial",
+          comparison: {
+            mode: "working-tree",
+            label: "Current working tree",
+            beforeSource: "HEAD",
+            afterSource: "working-tree",
+          },
+          diagnostics: ["One statement requires manual review."],
+        },
+      }),
+    /run\.stages\[migration\]|run\.partial/u,
   );
 });
 
@@ -157,6 +303,7 @@ test("workbench preserves trust metadata without deriving ERD origin from confid
       partial: true,
       stages: [
         { id: "security", status: "partial", detail: "One source was skipped", analyzed: 8, skipped: 1 },
+        { id: "migration", status: "not-run", detail: "No changed migration sources." },
       ],
     },
     external: {
@@ -227,6 +374,7 @@ test("workbench normalizes typed errors, health URLs, and relative ranking label
     version: "0.2.0",
     localOnly: true,
     allowedRootsConfigured: true,
+    capabilities: { migrationRisk: true, benchmark: true },
     external: {
       localByDefault: true,
       osv: { available: true, wouldTransmit: ["package name"] },
@@ -239,6 +387,7 @@ test("workbench normalizes typed errors, health URLs, and relative ranking label
   });
   assert.equal(health.external.ai.endpointOrigin, "https://models.example.test");
   assert.deepEqual(health.external.ai.wouldTransmit, ["project name", "question"]);
+  assert.equal(health.capabilities.migrationRisk, true);
   assert.throws(
     () => normalizeAtlasHealth({ status: "ok" }),
     /unrecognized health contract/u,

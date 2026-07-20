@@ -3,6 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runBenchmarkCatalog } from "../src/benchmark/index.js";
 import { analyzeLocalProject } from "../src/report/analyze.js";
 import { modelEndpointOrigin, modelIsConfigured } from "../src/ai/synthesis.js";
 import { GitComparisonError } from "../src/core/git.js";
@@ -32,11 +33,20 @@ import { PathPolicyError, resolveProjectPath } from "./path-policy.js";
 import {
   bundledSampleRoot as resolveBundledSampleRoot,
   loadBundledSampleGitMetadata,
+  loadBundledSampleGitSnapshots,
 } from "./sample.js";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(moduleDirectory, "..");
 const bundledSampleRoot = resolveBundledSampleRoot(projectRoot);
+const bundledBenchmarkRoot = join(projectRoot, "benchmarks");
+
+type BenchmarkRunner = typeof runBenchmarkCatalog;
+
+export interface AtlasServerOptions {
+  benchmarkRoot?: string;
+  runBenchmark?: BenchmarkRunner;
+}
 
 async function projectVersion(): Promise<string> {
   try {
@@ -176,6 +186,9 @@ async function analyze(
         gitMetadataOverride: sample
           ? await loadBundledSampleGitMetadata(projectRoot)
           : undefined,
+        gitFileSnapshotsOverride: sample
+          ? await loadBundledSampleGitSnapshots(projectRoot)
+          : undefined,
         publicPath: sample ? "Bundled sample" : root,
         limits: {
           maxFiles: config.maxFiles,
@@ -205,10 +218,70 @@ async function analyze(
   sendJson(response, 200, report);
 }
 
-export function createAtlasServer() {
+async function benchmark(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: Required<AtlasServerOptions>,
+): Promise<void> {
+  const config = loadEngineConfig();
+  const body = await readJsonBody<Record<string, unknown>>(
+    request,
+    config.requestBodyBytes,
+  );
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new RequestError(
+      400,
+      "INVALID_BENCHMARK_REQUEST",
+      "Benchmark request body must be an object.",
+    );
+  }
+  const fields = Object.keys(body);
+  if (fields.length !== 1 || fields[0] !== "suite") {
+    throw new RequestError(
+      400,
+      "INVALID_BENCHMARK_REQUEST",
+      "Benchmark requests accept only the bundled suite selector.",
+    );
+  }
+  if (body.suite !== "bundled") {
+    throw new RequestError(
+      400,
+      "UNSUPPORTED_BENCHMARK_SUITE",
+      "The local HTTP API runs only the bundled benchmark suite.",
+    );
+  }
+
+  const controller = new AbortController();
+  const abortForDisconnect = () => {
+    if (!response.writableEnded && !controller.signal.aborted) {
+      controller.abort(
+        new Error("Client disconnected before benchmark execution completed."),
+      );
+    }
+  };
+  request.once("aborted", abortForDisconnect);
+  response.once("close", abortForDisconnect);
+  if (request.aborted || response.destroyed) abortForDisconnect();
+
+  try {
+    const result = await options.runBenchmark(options.benchmarkRoot, {
+      signal: controller.signal,
+    });
+    sendJson(response, 200, result);
+  } finally {
+    request.removeListener("aborted", abortForDisconnect);
+    response.removeListener("close", abortForDisconnect);
+  }
+}
+
+export function createAtlasServer(options: AtlasServerOptions = {}) {
   loadLocalEnvironment(projectRoot);
   const config = loadEngineConfig();
   assertSafeServerBinding(config);
+  const benchmarkOptions: Required<AtlasServerOptions> = {
+    benchmarkRoot: options.benchmarkRoot ?? bundledBenchmarkRoot,
+    runBenchmark: options.runBenchmark ?? runBenchmarkCatalog,
+  };
   return createServer(async (request, response) => {
     applyCors(request, response, config.allowedOrigins);
     const requestId = randomUUID();
@@ -263,6 +336,10 @@ export function createAtlasServer() {
           localOnly: isLoopbackHost(config.host),
           platform: process.platform,
           allowedRootsConfigured: config.allowedRoots.length > 0,
+          capabilities: {
+            benchmark: true,
+            migrationRisk: true,
+          },
           projectPolicy,
           external: {
             localByDefault: true,
@@ -283,10 +360,15 @@ export function createAtlasServer() {
         await analyze(request, response);
         return;
       }
+      if (request.method === "POST" && url.pathname === "/api/benchmark") {
+        await benchmark(request, response, benchmarkOptions);
+        return;
+      }
       sendJson(response, 404, {
         error: { code: "NOT_FOUND", message: "Endpoint not found.", requestId },
       });
     } catch (error) {
+      if (response.destroyed || response.writableEnded) return;
       if (error instanceof RequestError) {
         sendJson(response, error.status, {
           error: { code: error.code, message: error.message, requestId },

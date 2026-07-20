@@ -115,6 +115,44 @@ export interface AtlasReport {
       relevance: "direct" | "indirect" | "project";
     }>;
   };
+  migration: {
+    status: RunStageStatus;
+    comparison?: {
+      mode: GitComparisonMode;
+      label: string;
+      beforeSource?: "HEAD" | "merge-base" | "synthetic baseline";
+      afterSource?: "working-tree" | "index" | "HEAD" | "fixture";
+    };
+    summary: {
+      files: number;
+      operations: number;
+      risks: number;
+      destructive: number;
+      safe: number;
+      bySeverity: Record<ReportSeverity, number>;
+    };
+    risks: Array<{
+      id: string;
+      label: string;
+      semanticKey: string;
+      category: string;
+      severity: ReportSeverity;
+      destructive: boolean;
+      safe: boolean;
+      confidence: number;
+      explanation: string;
+      remediation: string;
+      namespace?: string;
+      table?: string;
+      column?: string;
+      nextName?: string;
+      file: string;
+      line?: number;
+      relevance: "direct" | "indirect" | "project";
+      introduced: true;
+    }>;
+    diagnostics: string[];
+  };
   ai: {
     configured: boolean;
     enabled: boolean;
@@ -126,7 +164,14 @@ export interface AtlasReport {
     scope: ProjectScope;
     partial: boolean;
     stages: Array<{
-      id: "index" | "impact" | "security" | "dependencies" | "schema" | "ai";
+      id:
+        | "index"
+        | "impact"
+        | "security"
+        | "dependencies"
+        | "schema"
+        | "migration"
+        | "ai";
       status: RunStageStatus;
       detail: string;
       analyzed?: number;

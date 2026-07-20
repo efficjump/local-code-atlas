@@ -29,6 +29,8 @@ import type {
   GitComparisonMode,
   ProjectScope,
 } from "./types.js";
+import { analyzeMigrationComparison } from "./migration.js";
+import type { MigrationSnapshotOverride } from "./migration.js";
 
 export interface AnalyzeLocalProjectInput {
   root: string;
@@ -42,6 +44,7 @@ export interface AnalyzeLocalProjectInput {
     base?: string;
   };
   gitMetadataOverride?: GitMetadata;
+  gitFileSnapshotsOverride?: readonly MigrationSnapshotOverride[];
   limits: {
     maxFiles: number;
     maxFileBytes: number;
@@ -519,6 +522,7 @@ export async function analyzeLocalProject(
           "test",
         ]),
   );
+  const comparison = comparisonDescription(input.comparison);
   throwIfAborted(signal);
   const loaded = await loadAnalysisFiles(core, input.limits.maxFileBytes, signal);
   const reportScope = input.scope ?? "production";
@@ -565,6 +569,18 @@ export async function analyzeLocalProject(
     eligiblePackageCount,
   );
   const erd = schemaSection(projectAnalysis.schema, impact);
+  const migration = await analyzeMigrationComparison({
+    root: input.root,
+    comparison,
+    git: core.git,
+    changes: selectedGitChanges,
+    loadedFiles: loaded.files,
+    impact,
+    syntheticGit: input.gitMetadataOverride !== undefined,
+    snapshotOverrides: input.gitFileSnapshotsOverride,
+    maxFileBytes: input.limits.maxFileBytes,
+    signal,
+  });
   const ai = await synthesizeWithModel(
     {
       project: {
@@ -602,6 +618,7 @@ export async function analyzeLocalProject(
     ),
     ...(core.impact?.limitations ?? []),
     ...advisories.diagnostics,
+    ...migration.diagnostics,
   ];
   if (ai.diagnostic) diagnostics.push(ai.diagnostic);
   if (projectAnalysis.schema.summary.inferredRelationshipCount > 0) {
@@ -694,6 +711,18 @@ export async function analyzeLocalProject(
       skipped: schemaDeepSkips.length,
     },
     {
+      id: "migration",
+      status: migration.status,
+      detail:
+        migration.status === "not-run"
+          ? "No supported migration file was present in the selected Git comparison."
+          : migration.status === "failed"
+            ? "Migration before/after evidence could not be compared."
+            : `Reviewed ${migration.summary.operations} introduced operation(s) across ${migration.summary.files} changed migration file(s); ${migration.summary.risks} require review.${migration.status === "partial" ? " Coverage is incomplete." : ""}`,
+      analyzed: migration.summary.operations,
+      skipped: migration.status === "partial" ? migration.diagnostics.length : 0,
+    },
+    {
       id: "ai",
       status:
         aiStatus === "not-requested" || aiStatus === "not-configured"
@@ -714,8 +743,6 @@ export async function analyzeLocalProject(
   const partial = stages.some(
     (stage) => stage.status === "partial" || stage.status === "failed",
   );
-  const comparison = comparisonDescription(input.comparison);
-
   return {
     id: randomUUID(),
     generatedAt: new Date().toISOString(),
@@ -751,6 +778,7 @@ export async function analyzeLocalProject(
     impact,
     security,
     erd,
+    migration,
     ai: {
       configured: configuredModel,
       enabled: ai.enabled,

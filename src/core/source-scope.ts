@@ -30,7 +30,14 @@ export const DEFAULT_SOURCE_SCOPE_RULES: readonly SourceScopeRule[] = [
   {
     id: "fixture-directory",
     scope: "fixture",
-    pathSegments: ["fixture", "fixtures", "__fixtures__", "testdata"],
+    pathSegments: [
+      "fixture",
+      "fixtures",
+      "__fixtures__",
+      "testdata",
+      "benchmark",
+      "benchmarks",
+    ],
   },
   {
     id: "fixture-file",
