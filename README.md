@@ -1,3 +1,5 @@
+**English** | [한국어](README.ko.md)
+
 # Local Code Atlas
 
 Local Code Atlas is a local-first code intelligence workbench. Point it at a
